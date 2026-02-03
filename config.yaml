@@ -1,0 +1,57 @@
+codex:
+  # Recommended: use the Codex-tuned GPT-5.2 model with maximum reasoning effort.
+  model: "gpt-5.2-codex"
+  reasoning_effort: "xhigh"
+  sandbox: "read-only"
+  approval_policy: "never"
+
+claude_code:
+  model: "opus"
+  allowed_tools:
+    - "Bash"
+    - "Read"
+    - "Edit"
+    - "Write"
+    - "Glob"
+    - "Grep"
+  max_turns: 50
+
+orchestrator:
+  max_iterations: 5
+  # If Claude asks Codex questions, how many ask/answer rounds to allow per iteration.
+  max_claude_question_rounds: 5
+  # Default locations when running as a global CLI:
+  working_dir: "~/.luigi/workspaces"
+  logs_dir: "~/.luigi/logs"
+  # Workspace isolation:
+  # - in_place: run directly in the target directory (fastest; recommended default)
+  # - auto: git worktree when possible, else a safe copy+apply strategy
+  # - worktree: always use git worktrees (requires git repo with commits)
+  # - copy: always use an isolated copy (applied back on approval)
+  workspace_strategy: "in_place"
+  use_git_worktree: true
+  # Cleanup policy:
+  # - always: always delete the workspace directory/worktree
+  # - on_success: delete only when approved + persisted (recommended)
+  # - never: keep everything
+  cleanup: "on_success"
+  # Persistence policy:
+  apply_changes_on_success: true
+  commit_on_approval: true
+  commit_message: "Task complete: {task} (run {run_id})"
+  ui:
+    enabled: true
+    host: "127.0.0.1"
+    base_port: 8501
+    port_range: 500
+    open_browser: false
+    keep_alive_after_run: false
+    poll_interval_sec: 0.5
+    user_input_timeout_sec: null
+
+testing:
+  # If Codex plan does not provide `test_commands`, fall back to these.
+  timeout_sec: 1800
+  install_if_missing: false
+  unit_command: ["npm", "test"]
+  e2e_command: ["npx", "playwright", "test"]

@@ -1,0 +1,42 @@
+{
+  "codex": {
+    "model": "gpt-5.2-codex",
+    "reasoning_effort": "xhigh",
+    "sandbox": "read-only",
+    "approval_policy": "never"
+  },
+  "claude_code": {
+    "model": "opus",
+    "allowed_tools": ["Bash", "Read", "Edit", "Write", "Glob", "Grep"],
+    "max_turns": 50
+  },
+  "orchestrator": {
+    "max_iterations": 5,
+    "max_claude_question_rounds": 5,
+    "working_dir": "~/.luigi/workspaces",
+    "logs_dir": "~/.luigi/logs",
+    "workspace_strategy": "in_place",
+    "use_git_worktree": true,
+    "cleanup": "on_success",
+    "apply_changes_on_success": true,
+    "commit_on_approval": true,
+    "commit_message": "Task complete: {task} (run {run_id})",
+    "ui": {
+      "enabled": true,
+      "host": "127.0.0.1",
+      "base_port": 8501,
+      "port_range": 500,
+      "open_browser": false,
+      "keep_alive_after_run": false,
+      "poll_interval_sec": 0.5,
+      "user_input_timeout_sec": null
+    }
+  },
+  "testing": {
+    "timeout_sec": 1800,
+    "install_if_missing": false,
+    "unit_command": ["npm", "test"],
+    "e2e_command": ["npx", "playwright", "test"]
+  }
+}
+

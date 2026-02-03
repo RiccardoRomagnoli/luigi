@@ -1,0 +1,35 @@
+{
+  "name": "luigi",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Codex + Claude Code automated coding orchestrator (global CLI).",
+  "bin": {
+    "luigi": "bin/luigi.js"
+  },
+  "files": [
+    "bin/",
+    "*.py",
+    "ui/",
+    "schemas/",
+    "config.json",
+    "config.yaml",
+    "README.md",
+    "ARCHITECTURE.md",
+    "requirements.txt"
+  ],
+  "scripts": {
+    "test": "python3 -m unittest discover -s tests_python -v"
+  },
+  "keywords": [
+    "ai",
+    "multi-agent",
+    "codex",
+    "claude",
+    "orchestrator"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}
