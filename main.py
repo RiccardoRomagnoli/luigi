@@ -2193,7 +2193,7 @@ def resolve_config_path(config_arg: str | None, *, repo_path: str) -> str:
         if os.path.exists(candidate):
             return candidate
 
-    return os.path.join(os.path.dirname(__file__), "config.json")
+    return os.path.join(os.path.dirname(__file__), "config.yaml")
 
 
 def main():
