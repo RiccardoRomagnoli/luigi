@@ -2181,13 +2181,6 @@ def resolve_config_path(config_arg: str | None, *, repo_path: str) -> str:
         os.path.join(repo_path, "luigi.config.json"),
         os.path.join(repo_path, "luigi.config.yaml"),
         os.path.join(repo_path, "luigi.config.yml"),
-        # Back-compat (old name)
-        os.path.join(repo_path, ".combo-agents", "config.json"),
-        os.path.join(repo_path, ".combo-agents", "config.yaml"),
-        os.path.join(repo_path, ".combo-agents", "config.yml"),
-        os.path.join(repo_path, "combo-agents.config.json"),
-        os.path.join(repo_path, "combo-agents.config.yaml"),
-        os.path.join(repo_path, "combo-agents.config.yml"),
     ]
     for candidate in candidates:
         if os.path.exists(candidate):

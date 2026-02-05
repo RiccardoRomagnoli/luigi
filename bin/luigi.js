@@ -10,8 +10,7 @@ function tryCommand(cmd, args) {
 }
 
 function findPythonExecutable() {
-  // Back-compat: accept the old env var as a fallback.
-  const override = process.env.LUIGI_PYTHON || process.env.COMBO_AGENTS_PYTHON;
+  const override = process.env.LUIGI_PYTHON;
   const candidates = override ? [override] : ['python3', 'python'];
   for (const candidate of candidates) {
     if (tryCommand(candidate, ['--version'])) return candidate;

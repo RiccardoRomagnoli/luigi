@@ -114,8 +114,6 @@ The `luigi` Node wrapper uses `python3`/`python` by default. You can override:
 LUIGI_PYTHON=/path/to/python3 luigi .
 ```
 
-Legacy fallback env var: `COMBO_AGENTS_PYTHON`.
-
 ## Configuration
 
 ### Config file resolution (when `--config` is omitted)
@@ -129,15 +127,9 @@ Luigi searches the target repo for (in order):
 luigi.config.json
 luigi.config.yaml
 luigi.config.yml
-.combo-agents/config.json          (legacy)
-.combo-agents/config.yaml          (legacy)
-.combo-agents/config.yml           (legacy)
-combo-agents.config.json           (legacy)
-combo-agents.config.yaml           (legacy)
-combo-agents.config.yml            (legacy)
 ```
 
-If none are found, it uses the built-in `config.json` shipped with the package.
+If none are found, it uses the built-in `config.yaml` shipped with the package.
 
 ### Key orchestrator settings
 

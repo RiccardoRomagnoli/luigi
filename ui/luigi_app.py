@@ -178,12 +178,6 @@ def _resolve_repo_config_path(repo_path: str) -> Optional[str]:
         os.path.join(repo_path, "luigi.config.json"),
         os.path.join(repo_path, "luigi.config.yaml"),
         os.path.join(repo_path, "luigi.config.yml"),
-        os.path.join(repo_path, ".combo-agents", "config.json"),
-        os.path.join(repo_path, ".combo-agents", "config.yaml"),
-        os.path.join(repo_path, ".combo-agents", "config.yml"),
-        os.path.join(repo_path, "combo-agents.config.json"),
-        os.path.join(repo_path, "combo-agents.config.yaml"),
-        os.path.join(repo_path, "combo-agents.config.yml"),
     ]
     for candidate in candidates:
         if os.path.isfile(candidate):
