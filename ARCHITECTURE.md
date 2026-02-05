@@ -90,7 +90,7 @@ The plan is **machine-readable JSON** (validated by Codex via `--output-schema`)
 
 ```bash
 # Using Codex CLI
-codex exec --model gpt-5.2-codex -c model_reasoning_effort=xhigh \
+codex exec --model gpt-5.3-codex -c model_reasoning_effort=xhigh \
   --output-schema schemas/codex_plan.schema.json \
   --output-last-message /tmp/plan.json \
   "PHASE: PLAN ..."
@@ -115,7 +115,7 @@ Reviews changes made by Claude Code and provides structured feedback.
 
 ```bash
 # Using Codex CLI for review
-codex exec --model gpt-5.2-codex -c model_reasoning_effort=xhigh \
+codex exec --model gpt-5.3-codex -c model_reasoning_effort=xhigh \
   --output-schema schemas/codex_review.schema.json \
   --output-last-message /tmp/review.json \
   "PHASE: REVIEW ..."
@@ -151,14 +151,14 @@ codex exec --model gpt-5.2-codex -c model_reasoning_effort=xhigh \
 |---------|---------|
 | `codex exec "prompt"` | Non-interactive mode |
 | `codex exec resume --last "prompt"` | Continue previous session |
-| `--model gpt-5.2-codex` | Specify model |
+| `--model gpt-5.3-codex` | Specify model |
 
 ## Configuration
 
 ```yaml
 # config.yaml
 codex:
-  model: "gpt-5.2-codex"
+  model: "gpt-5.3-codex"
   reasoning_effort: "xhigh"
   
 claude_code:
