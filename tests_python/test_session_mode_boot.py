@@ -14,7 +14,7 @@ class SessionModeBootTest(unittest.TestCase):
             os.makedirs(repo_path, exist_ok=True)
             config = {
                 "codex": {
-                    "model": "gpt-5.3-codex",
+                    "model": "gpt-5.2-codex",
                     "reasoning_effort": "xhigh",
                     "sandbox": "read-only",
                     "approval_policy": "never",

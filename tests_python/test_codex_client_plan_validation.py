@@ -13,7 +13,7 @@ class CodexClientPlanValidationTest(unittest.TestCase):
         mock_path = os.path.join(REPO_ROOT, "tests", "mocks", "codex_mock_invalid_plan.py")
         config = {
             "command": [sys.executable, mock_path],
-            "model": "gpt-5.3-codex",
+            "model": "gpt-5.2-codex",
             "reasoning_effort": "xhigh",
             "sandbox": "read-only",
             "approval_policy": "never",

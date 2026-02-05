@@ -1,6 +1,6 @@
 codex:
   # Recommended: use the Codex-tuned GPT-5.2 model with maximum reasoning effort.
-  model: "gpt-5.3-codex"
+  model: "gpt-5.2-codex"
   reasoning_effort: "xhigh"
   sandbox: "read-only"
   approval_policy: "never"

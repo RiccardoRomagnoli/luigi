@@ -15,7 +15,7 @@ class CodexClientApprovalPolicyTest(unittest.TestCase):
         )
         config = {
             "command": [sys.executable, mock_path],
-            "model": "gpt-5.3-codex",
+            "model": "gpt-5.2-codex",
             "reasoning_effort": "xhigh",
             "sandbox": "read-only",
             "approval_policy": "never",

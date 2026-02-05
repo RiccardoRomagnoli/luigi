@@ -22,7 +22,7 @@ class OrchestratorIntegrationTest(unittest.TestCase):
             config = {
                 "codex": {
                     "command": ["node", os.path.join(REPO_ROOT, "tests", "mocks", "codex_mock.js")],
-                    "model": "gpt-5.3-codex",
+                    "model": "gpt-5.2-codex",
                     "reasoning_effort": "xhigh",
                     "sandbox": "read-only",
                     "approval_policy": "never",
