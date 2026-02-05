@@ -37,7 +37,7 @@ class ResumeOrchestratorModeTest(unittest.TestCase):
                 json.dump(
                     {
                         "codex": {
-                            "model": "gpt-5.2-codex",
+                            "model": "gpt-5.3-codex",
                             "reasoning_effort": "xhigh",
                             "sandbox": "read-only",
                             "approval_policy": "never",
