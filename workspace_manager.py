@@ -191,12 +191,51 @@ class Workspace:
         return ""
 
     def cleanup(self) -> None:
-        """Clean up any temporary workspace artifacts created for this run."""
+        """Clean up any temporary workspace artifacts created for this run.
+
+        Multi-agent runs can create multiple git worktrees under the same `run_dir`.
+        If we delete `run_dir` without unregistering those worktrees first, git will
+        keep stale worktree entries (and future runs may "resurrect" them).
+        """
+
+        # Best-effort: unregister any registered git worktrees living under run_dir.
+        try:
+            run_dir_abs = os.path.abspath(self.run_dir)
+            result = _run(["git", "worktree", "list", "--porcelain"], cwd=self.repo_path)
+            if result.returncode == 0:
+                worktree_paths: List[str] = []
+                for line in (result.stdout or "").splitlines():
+                    if not line.startswith("worktree "):
+                        continue
+                    wt_path = line.split(" ", 1)[1].strip()
+                    if wt_path:
+                        worktree_paths.append(wt_path)
+
+                nested: List[str] = []
+                for wt_path in worktree_paths:
+                    wt_abs = os.path.abspath(wt_path)
+                    try:
+                        if os.path.commonpath([run_dir_abs, wt_abs]) == run_dir_abs:
+                            nested.append(wt_abs)
+                    except ValueError:
+                        # Different drives (Windows) or invalid paths.
+                        continue
+
+                # Remove deepest paths first (avoids parent/child ordering issues).
+                nested.sort(key=lambda p: len(p.split(os.sep)), reverse=True)
+                for wt_abs in nested:
+                    _run(["git", "worktree", "remove", "--force", wt_abs], cwd=self.repo_path)
+                if nested:
+                    _run(["git", "worktree", "prune"], cwd=self.repo_path)
+        except Exception:
+            pass
+
         if self.strategy == "worktree":
             # Remove the worktree directory and its admin entry.
             # Use --force because worktrees may have uncommitted changes.
             _run(["git", "worktree", "remove", "--force", self.path], cwd=self.repo_path)
-        # Always remove run_dir for non-worktree strategies (and worktree artifacts within it).
+
+        # Always remove run_dir for non-worktree strategies (and any remaining artifacts within it).
         if os.path.isdir(self.run_dir):
             shutil.rmtree(self.run_dir, ignore_errors=True)
 

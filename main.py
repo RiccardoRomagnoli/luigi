@@ -180,6 +180,7 @@ def _claude_plan_prompt(task: str, *, user_context: str) -> str:
     return (
         "PHASE: PLAN\n"
         "You are a reviewer planning the work. Output JSON that matches the plan schema exactly.\n"
+        "IMPORTANT: You are running in restricted tool mode (Read/Glob/Grep only). Do NOT attempt to run shell commands.\n"
         "- Always include ALL top-level fields: status, claude_prompt, tasks, test_commands, questions, notes.\n"
         '- For a normal plan, set status to "OK". For clarification, set status to "NEEDS_USER_INPUT".\n'
         "- Use null or empty arrays for fields that do not apply.\n"
@@ -201,6 +202,7 @@ def _review_candidates_prompt(
     return (
         f"PHASE: {phase}\n"
         "You are a reviewer. Choose the best candidate and summarize next steps.\n"
+        "IMPORTANT: You are running in restricted tool mode (Read/Glob/Grep only). Do NOT attempt to run shell commands.\n"
         "Output JSON matching the reviewer_decision schema:\n"
         "- Always include: status, winner_candidate_id, summary, feedback, next_prompt, questions, notes.\n"
         '- If you need clarification from the admin, set status to "NEEDS_USER_INPUT" and add questions.\n'
@@ -213,6 +215,41 @@ def _review_candidates_prompt(
         f"Candidates:\n{candidates_text}\n\n"
         + (f"User context / answers:\n{user_context}\n" if user_context else "")
     )
+
+
+def _validate_reviewer_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
+    """Minimal plan-shape validation for reviewer-produced plans (Codex or Claude)."""
+    if not isinstance(plan, dict):
+        raise RuntimeError("Reviewer plan invalid: expected an object.")
+
+    status = plan.get("status")
+    if status == "NEEDS_USER_INPUT":
+        questions = plan.get("questions", [])
+        if not isinstance(questions, list) or not questions:
+            raise RuntimeError("Reviewer plan invalid: NEEDS_USER_INPUT requires questions.")
+        return plan
+
+    if status != "OK":
+        raise RuntimeError(f"Reviewer plan invalid: unknown status {status!r}.")
+
+    claude_prompt = plan.get("claude_prompt")
+    if not isinstance(claude_prompt, str) or not claude_prompt.strip():
+        raise RuntimeError("Reviewer plan invalid: claude_prompt must be a non-empty string.")
+
+    tasks = plan.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        raise RuntimeError("Reviewer plan invalid: tasks must be a non-empty list.")
+    for idx, task in enumerate(tasks):
+        if not isinstance(task, dict):
+            raise RuntimeError(f"Reviewer plan invalid: tasks[{idx}] must be an object.")
+        for field in ("id", "title", "description"):
+            val = task.get(field)
+            if not isinstance(val, str) or not val.strip():
+                raise RuntimeError(
+                    f"Reviewer plan invalid: tasks[{idx}].{field} must be a non-empty string."
+                )
+
+    return plan
 
 
 def _await_admin_decision(
@@ -414,7 +451,7 @@ def _run_reviewer_plan(
         json_schema=plan_schema,
         cwd=cwd,
         allowed_tools_override=["Read", "Glob", "Grep"],
-        max_turns_override=3,
+        max_turns_override=10,
     )
     if not output:
         raise RuntimeError("Claude reviewer failed to produce a plan.")
@@ -441,7 +478,7 @@ def _run_reviewer_decision(
         json_schema=decision_schema,
         cwd=cwd,
         allowed_tools_override=["Read", "Glob", "Grep"],
-        max_turns_override=3,
+        max_turns_override=10,
     )
     if not output:
         raise RuntimeError("Claude reviewer failed to produce a decision.")
@@ -509,6 +546,9 @@ def run_multi_agent_session(
     max_iterations = int(config.get("orchestrator", {}).get("max_iterations", 1))
     workspace_strategy = config.get("orchestrator", {}).get("workspace_strategy", "auto")
     use_git_worktree = config.get("orchestrator", {}).get("use_git_worktree", True)
+    cleanup_policy = config.get("orchestrator", {}).get(
+        "cleanup", "on_success"
+    )  # always | on_success | never
     apply_changes_on_success = config.get("orchestrator", {}).get("apply_changes_on_success", True)
     commit_on_approval = config.get("orchestrator", {}).get("commit_on_approval", True)
     commit_message_template = config.get("orchestrator", {}).get("commit_message", "Task complete: {task}")
@@ -675,6 +715,11 @@ def run_multi_agent_session(
 
         approved = False
         persisted = False
+        # Per-session cleanup flags (main() cleanup doesn't run while session_mode loops here).
+        force_cleanup_worktree = False
+        merge_branch_to_delete = None
+        delete_branch_after_merge = False
+        merged_to_target_branch = False
         iteration = 0
         final_selected_candidate = None
         final_workspace = None
@@ -722,8 +767,26 @@ def run_multi_agent_session(
                     futures = {pool.submit(_plan_one, reviewer): reviewer for reviewer in reviewers}
                     for future in as_completed(futures):
                         reviewer = futures[future]
-                        reviewer_plans[reviewer.id] = future.result()
+                        try:
+                            reviewer_plans[reviewer.id] = future.result()
+                        except Exception as exc:
+                            state_manager.add_to_history(f"Reviewer {reviewer.id} plan failed: {exc}")
                 _note("Plans created.")
+
+                # Validate plans; drop invalid ones so we don't generate broken candidates.
+                plan_errors: Dict[str, Any] = {}
+                validated_plans: Dict[str, Dict[str, Any]] = {}
+                for reviewer in reviewers:
+                    raw_plan = reviewer_plans.get(reviewer.id)
+                    try:
+                        validated_plans[reviewer.id] = _validate_reviewer_plan(raw_plan or {})
+                    except Exception as exc:
+                        plan_errors[reviewer.id] = {"error": str(exc), "raw": raw_plan}
+                        state_manager.add_to_history(f"Reviewer {reviewer.id} plan invalid: {exc}")
+
+                reviewer_plans = validated_plans
+                if plan_errors:
+                    state_manager.update_state("plan_errors", plan_errors)
 
                 # Handle reviewer questions serially if any
                 for reviewer in reviewers:
@@ -942,7 +1005,11 @@ def run_multi_agent_session(
                     futures = {pool.submit(_decide_one, reviewer): reviewer for reviewer in reviewers}
                     for future in as_completed(futures):
                         reviewer = futures[future]
-                        reviewer_decisions[reviewer.id] = future.result()
+                        try:
+                            reviewer_decisions[reviewer.id] = future.result()
+                        except Exception as exc:
+                            reviewer_decisions[reviewer.id] = None
+                            state_manager.add_to_history(f"Reviewer {reviewer.id} decision failed: {exc}")
                 _note("Reviewer decisions received.")
 
                 for reviewer in reviewers:
@@ -1269,11 +1336,42 @@ def run_multi_agent_session(
         if not approved:
             state_manager.update_state("stage", "failed")
             state_manager.update_state("persisted", False)
-        final_cleanup_workspace = final_workspace
+        # Let the top-level runner clean up the root run workspace (not just the final candidate).
+        # In session mode, we do per-session cleanup below since the top-level `finally` won't run.
+        final_cleanup_workspace = None
         final_approved = approved
         final_persisted = persisted
 
         state_manager.update_state("run_status", "stopped")
+        if session_mode:
+            should_cleanup = (
+                cleanup_policy == "always"
+                or (cleanup_policy == "on_success" and approved and persisted)
+                or force_cleanup_worktree
+            )
+            if should_cleanup:
+                try:
+                    _note("Cleaning up workspaces...")
+                    run_dir = os.path.join(workspace_manager.base_dir, state_manager.run_id)
+                    Workspace(
+                        repo_path=original_repo_path,
+                        path=original_repo_path,
+                        strategy="in_place",
+                        run_dir=run_dir,
+                        baseline_path=None,
+                        branch_name=None,
+                    ).cleanup()
+                    # Ensure we don't point to a deleted path between sessions.
+                    current_repo_path = original_repo_path
+                except Exception as e:
+                    state_manager.add_to_history(f"Workspace cleanup failed: {e}")
+
+            if delete_branch_after_merge and merge_branch_to_delete:
+                _delete_local_branch(
+                    original_repo_path,
+                    merge_branch_to_delete,
+                    note_fn=_note,
+                )
         if not session_mode:
             break
         state_manager.update_state("run_status", "idle")

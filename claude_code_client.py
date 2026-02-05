@@ -193,6 +193,19 @@ class ClaudeCodeClient:
             return None
 
         try:
-            return json.loads(result.stdout.strip() or "{}")
+            payload = json.loads(result.stdout.strip() or "{}")
         except json.JSONDecodeError:
             return None
+
+        # Claude CLI returns a JSON "envelope" and puts schema-constrained output under
+        # `structured_output`. Return the structured object so callers receive the schema shape.
+        if isinstance(payload, dict):
+            structured = payload.get("structured_output")
+            if isinstance(structured, dict):
+                return structured
+
+            # Back-compat: some mocks/older outputs may return the structured object at top-level.
+            if "status" in payload and "type" not in payload:
+                return payload
+
+        return None
