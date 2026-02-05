@@ -119,3 +119,80 @@ class ClaudeCodeClient:
             if not log_f:
                 print(f"Stderr: {result.stderr}")
             return None
+
+    def run_structured(
+        self,
+        *,
+        prompt: str,
+        json_schema: Dict[str, Any],
+        cwd: Optional[str] = None,
+        session_id: Optional[str] = None,
+        allowed_tools_override: Optional[list[str]] = None,
+        max_turns_override: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        command = [
+            *self.command,
+            "-p",
+            prompt,
+            "--model", self.config.get("model", "opus"),
+            "--output-format", "json",
+            "--json-schema", json.dumps(json_schema),
+        ]
+
+        allowed_tools = allowed_tools_override if allowed_tools_override is not None else self.config.get("allowed_tools")
+        if allowed_tools:
+            command.extend(["--allowedTools", ",".join(allowed_tools)])
+
+        if session_id:
+            command.extend(["--resume", session_id])
+
+        max_turns = max_turns_override if max_turns_override is not None else self.config.get("max_turns")
+        if max_turns:
+            command.extend(["--max-turns", str(max_turns)])
+
+        log_f = None
+        if self.log_path:
+            try:
+                os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
+                log_f = open(self.log_path, "a")
+                log_f.write(f"\n=== {datetime.utcnow().isoformat()} Claude review ===\n")
+                log_f.flush()
+            except OSError:
+                log_f = None
+
+        result = None
+        try:
+            if log_f:
+                result = subprocess.run(command, cwd=cwd, stdout=subprocess.PIPE, stderr=log_f, text=True)
+            else:
+                result = subprocess.run(command, cwd=cwd, capture_output=True, text=True)
+        except OSError as exc:
+            if log_f:
+                try:
+                    log_f.write(f"\n=== Claude spawn error: {exc} ===\n")
+                    log_f.flush()
+                except OSError:
+                    pass
+            return None
+        finally:
+            if log_f:
+                try:
+                    if result is not None:
+                        log_f.write("\n--- Claude stdout ---\n")
+                        log_f.write(result.stdout or "")
+                        log_f.write(f"\n=== Claude exit {result.returncode} ===\n")
+                    log_f.flush()
+                except OSError:
+                    pass
+                try:
+                    log_f.close()
+                except OSError:
+                    pass
+
+        if not result or result.returncode != 0:
+            return None
+
+        try:
+            return json.loads(result.stdout.strip() or "{}")
+        except json.JSONDecodeError:
+            return None

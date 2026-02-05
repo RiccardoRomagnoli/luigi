@@ -1,6 +1,8 @@
 
 import json
 import os
+import shutil
+import threading
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -32,53 +34,77 @@ class StateManager:
         os.makedirs(self.log_dir, exist_ok=True)
         self.state = {}
         self.history = []
+        self._lock = threading.RLock()
         if load_existing:
             self.load_state()
             self.load_history()
 
     def update_state(self, key, value):
         """Updates a key in the current state."""
-        self.state[key] = value
-        self.save_state()
+        with self._lock:
+            self.state[key] = value
+            self.save_state()
 
     def get_state(self, key):
         """Retrieves a key from the current state."""
-        return self.state.get(key)
+        with self._lock:
+            return self.state.get(key)
 
     def add_to_history(self, event):
         """Adds an event to the history."""
         timestamp = datetime.now().isoformat()
-        self.history.append(f"[{timestamp}] {event}")
-        self.save_history()
+        with self._lock:
+            self.history.append(f"[{timestamp}] {event}")
+            self.save_history()
 
     def save_state(self):
         """Saves the current state to a file."""
-        with open(os.path.join(self.log_dir, "state.json"), "w") as f:
-            json.dump(self.state, f, indent=2)
+        with self._lock:
+            path = os.path.join(self.log_dir, "state.json")
+            tmp_path = f"{path}.tmp"
+            bak_path = f"{path}.bak"
+            with open(tmp_path, "w") as f:
+                json.dump(self.state, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            if os.path.exists(path):
+                try:
+                    shutil.copy2(path, bak_path)
+                except OSError:
+                    pass
+            os.replace(tmp_path, path)
 
     def save_history(self):
         """Saves the history to a file."""
-        with open(os.path.join(self.log_dir, "history.log"), "w") as f:
-            f.write("\n".join(self.history))
+        with self._lock:
+            with open(os.path.join(self.log_dir, "history.log"), "w") as f:
+                f.write("\n".join(self.history))
 
     def load_state(self):
         """Loads state from disk if present."""
         path = os.path.join(self.log_dir, "state.json")
-        try:
-            with open(path, "r") as f:
-                self.state = json.load(f)
-        except FileNotFoundError:
-            self.state = {}
-        except json.JSONDecodeError:
-            # Corrupted or mid-write; keep existing in-memory state.
-            pass
+        with self._lock:
+            try:
+                with open(path, "r") as f:
+                    self.state = json.load(f)
+            except FileNotFoundError:
+                self.state = {}
+            except json.JSONDecodeError:
+                bak_path = f"{path}.bak"
+                try:
+                    with open(bak_path, "r") as f:
+                        self.state = json.load(f)
+                except (FileNotFoundError, json.JSONDecodeError):
+                    # Corrupted or mid-write; keep existing in-memory state.
+                    pass
 
     def load_history(self):
         """Loads history from disk if present."""
         path = os.path.join(self.log_dir, "history.log")
-        try:
-            with open(path, "r") as f:
-                data = f.read().splitlines()
-            self.history = data
-        except FileNotFoundError:
-            self.history = []
+        with self._lock:
+            try:
+                with open(path, "r") as f:
+                    data = f.read().splitlines()
+                self.history = data
+            except FileNotFoundError:
+                self.history = []

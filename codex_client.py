@@ -181,6 +181,9 @@ class CodexClient:
         plan = self._run_codex_json(prompt=prompt, schema_path=_plan_schema_path(), cwd=cwd)
         return self._validate_plan(plan)
 
+    def run_structured(self, *, prompt: str, schema_path: str, cwd: str) -> Dict[str, Any]:
+        return self._run_codex_json(prompt=prompt, schema_path=schema_path, cwd=cwd)
+
     def refine_plan(
         self,
         plan: Dict[str, Any],

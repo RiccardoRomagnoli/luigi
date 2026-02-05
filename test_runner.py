@@ -89,6 +89,9 @@ def run_tests(*, cwd: str, config: Dict, test_commands: Optional[List[Dict[str, 
     """
     testing_cfg = config.get("testing", {})
     timeout_sec = testing_cfg.get("timeout_sec")
+    if timeout_sec is not None:
+        if not isinstance(timeout_sec, (int, float)) or isinstance(timeout_sec, bool) or timeout_sec <= 0:
+            raise ValueError("testing.timeout_sec must be a positive number or null.")
     install_if_missing = testing_cfg.get("install_if_missing", False)
 
     install_command = testing_cfg.get("install_command", ["npm", "install"])
@@ -124,11 +127,21 @@ def run_tests(*, cwd: str, config: Dict, test_commands: Optional[List[Dict[str, 
             {"id": "e2e", "kind": "e2e", "command": fallback_e2e_command},
         ]
 
-    for cmd_spec in commands_to_run:
+    for idx, cmd_spec in enumerate(commands_to_run):
         command = cmd_spec.get("command")
         if not isinstance(command, list) or not command:
             continue
-        cmd_timeout = cmd_spec.get("timeout_sec", timeout_sec)
+        cmd_timeout = cmd_spec.get("timeout_sec")
+        if cmd_timeout is None:
+            cmd_timeout = timeout_sec
+        elif (
+            not isinstance(cmd_timeout, (int, float))
+            or isinstance(cmd_timeout, bool)
+            or cmd_timeout <= 0
+        ):
+            raise ValueError(
+                f"test_commands[{idx}].timeout_sec must be a positive number or null."
+            )
         res = run_command(command, cwd=cwd, timeout_sec=cmd_timeout)
         results["commands"].append(
             {

@@ -1,12 +1,133 @@
+import hashlib
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
 from typing import List, Optional, Set
 
 
+def _validate_dir_name(value: str, *, label: str) -> str:
+    value = str(value or "").strip()
+    if not value:
+        raise ValueError(f"{label} must be a non-empty string.")
+    if value in (".", ".."):
+        raise ValueError(f"{label} must not be '.' or '..'.")
+    seps = [os.sep]
+    if os.altsep:
+        seps.append(os.altsep)
+    if any(sep and sep in value for sep in seps):
+        raise ValueError(f"{label} must not contain path separators.")
+    if "\x00" in value:
+        raise ValueError(f"{label} must not contain NUL bytes.")
+    return value
+
+
+def _safe_join(root: str, *parts: str) -> str:
+    root_abs = os.path.abspath(root)
+    path = os.path.abspath(os.path.join(root_abs, *parts))
+    if os.path.commonpath([root_abs, path]) != root_abs:
+        raise RuntimeError(f"Refusing to create path outside base directory: {path}")
+    return path
+
+
+_COMPONENT_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _sanitize_component(value: str, *, max_len: int = 80) -> str:
+    raw = str(value or "")
+    raw = raw.replace("..", "_")
+    raw = raw.replace(os.sep, "_")
+    if os.altsep:
+        raw = raw.replace(os.altsep, "_")
+
+    cleaned = _COMPONENT_SAFE_RE.sub("_", raw).strip("._-")
+    if not cleaned:
+        cleaned = "x"
+    if len(cleaned) > max_len:
+        digest = hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()[:12]
+        cleaned = cleaned[: max(1, max_len - 13)] + "_" + digest
+    return cleaned
+
+
+def _safe_dest_path(dst_root: str, rel_path: str, *, allow_symlink_file: bool) -> str:
+    """Resolve `rel_path` under `dst_root` and refuse symlink traversal.
+
+    This protects the "copy" workspace apply step from overwriting files outside the repo
+    when the destination contains symlinked directories or files.
+    """
+    dst_root_abs = os.path.abspath(dst_root)
+    rel_path = str(rel_path or "")
+    # Avoid absolute rel paths causing `os.path.join` to discard dst_root.
+    rel_path = rel_path.lstrip(os.sep)
+    if os.altsep:
+        rel_path = rel_path.lstrip(os.altsep)
+
+    dst_path = os.path.abspath(os.path.join(dst_root_abs, rel_path))
+    if os.path.commonpath([dst_root_abs, dst_path]) != dst_root_abs:
+        raise RuntimeError(f"Refusing to write outside destination root: {dst_path}")
+
+    rel_parts = os.path.relpath(dst_path, dst_root_abs).split(os.sep)
+    cur = dst_root_abs
+    # Forbid symlinked directories along the path.
+    for part in rel_parts[:-1]:
+        cur = os.path.join(cur, part)
+        if os.path.islink(cur):
+            raise RuntimeError(f"Refusing to write through symlinked destination directory: {cur}")
+
+    if not allow_symlink_file and os.path.islink(dst_path):
+        raise RuntimeError(f"Refusing to overwrite symlinked destination file: {dst_path}")
+
+    return dst_path
+
+
 def _run(cmd: List[str], *, cwd: Optional[str] = None) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+
+def _git_branch_exists(repo_path: str, branch_name: str) -> bool:
+    # branch_name should be a ref name like "orchestrator/<...>"
+    result = _run(["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch_name}"], cwd=repo_path)
+    return result.returncode == 0
+
+
+def _find_worktree_for_branch(repo_path: str, branch_name: str) -> Optional[str]:
+    """Return the worktree path where branch is checked out, if any."""
+    result = _run(["git", "worktree", "list", "--porcelain"], cwd=repo_path)
+    if result.returncode != 0:
+        return None
+    path: Optional[str] = None
+    branch_ref = f"refs/heads/{branch_name}"
+    for line in (result.stdout or "").splitlines():
+        if line.startswith("worktree "):
+            path = line.split(" ", 1)[1].strip()
+            continue
+        if line.startswith("branch ") and path:
+            ref = line.split(" ", 1)[1].strip()
+            if ref == branch_ref:
+                return path
+            path = None
+    return None
+
+
+def _is_registered_worktree(repo_path: str, worktree_path: str) -> bool:
+    result = _run(["git", "worktree", "list", "--porcelain"], cwd=repo_path)
+    if result.returncode != 0:
+        return False
+    for line in (result.stdout or "").splitlines():
+        if line.startswith("worktree ") and line.split(" ", 1)[1].strip() == worktree_path:
+            return True
+    return False
+
+
+def _cleanup_stale_worktree(repo_path: str, worktree_path: str) -> bool:
+    """Remove a registered worktree whose path no longer exists."""
+    if os.path.exists(worktree_path):
+        return False
+    if not _is_registered_worktree(repo_path, worktree_path):
+        return False
+    _run(["git", "worktree", "remove", "--force", worktree_path], cwd=repo_path)
+    _run(["git", "worktree", "prune"], cwd=repo_path)
+    return True
 
 
 def is_git_repo(path: str) -> bool:
@@ -139,15 +260,17 @@ def _sync_dir(*, src: str, dst: str, baseline: str) -> None:
     # Copy/update files from src -> dst
     for rel in sorted(src_files):
         src_file = os.path.join(src, rel)
-        dst_file = os.path.join(dst, rel)
+        dst_file = _safe_dest_path(dst, rel, allow_symlink_file=False)
         os.makedirs(os.path.dirname(dst_file), exist_ok=True)
+        if os.path.islink(src_file):
+            raise RuntimeError(f"Refusing to copy symlinked file into repo: {src_file}")
         shutil.copy2(src_file, dst_file)
 
     # Delete files that existed in baseline but are missing from src
     deleted = baseline_files - src_files
     for rel in sorted(deleted):
-        dst_file = os.path.join(dst, rel)
-        if os.path.exists(dst_file) and os.path.isfile(dst_file):
+        dst_file = _safe_dest_path(dst, rel, allow_symlink_file=True)
+        if os.path.lexists(dst_file) and (os.path.isfile(dst_file) or os.path.islink(dst_file)):
             os.remove(dst_file)
 
     # Best-effort: remove empty directories (walk bottom-up)
@@ -179,7 +302,8 @@ class WorkspaceManager:
     ) -> Workspace:
         repo_path = os.path.abspath(repo_path)
         os.makedirs(repo_path, exist_ok=True)
-        run_dir = os.path.join(self.base_dir, run_id)
+        run_id = _validate_dir_name(run_id, label="run_id")
+        run_dir = _safe_join(self.base_dir, run_id)
         os.makedirs(run_dir, exist_ok=True)
 
         ignore_patterns = _default_copy_ignore_patterns(copy_ignore_patterns)
@@ -198,11 +322,42 @@ class WorkspaceManager:
                 raise RuntimeError("Requested git worktree strategy but repo is not a git repo with commits.")
 
             worktree_path = os.path.join(run_dir, "worktree")
-            if os.path.exists(worktree_path):
-                shutil.rmtree(worktree_path, ignore_errors=True)
-
             branch_name = f"orchestrator/{run_id}"
-            result = _run(["git", "worktree", "add", "-b", branch_name, worktree_path], cwd=repo_path)
+            if os.path.isdir(worktree_path) and is_git_repo(worktree_path):
+                return Workspace(
+                    repo_path=repo_path,
+                    path=worktree_path,
+                    strategy="worktree",
+                    run_dir=run_dir,
+                    baseline_path=None,
+                    branch_name=branch_name,
+                )
+
+            existing_path = _find_worktree_for_branch(repo_path, branch_name)
+            if existing_path:
+                if os.path.isdir(existing_path) and is_git_repo(existing_path):
+                    return Workspace(
+                        repo_path=repo_path,
+                        path=existing_path,
+                        strategy="worktree",
+                        run_dir=run_dir,
+                        baseline_path=None,
+                        branch_name=branch_name,
+                    )
+                _cleanup_stale_worktree(repo_path, existing_path)
+
+            force_add = _cleanup_stale_worktree(repo_path, worktree_path)
+            if _git_branch_exists(repo_path, branch_name):
+                cmd = ["git", "worktree", "add"]
+                if force_add:
+                    cmd.append("-f")
+                cmd.extend([worktree_path, branch_name])
+            else:
+                cmd = ["git", "worktree", "add"]
+                if force_add:
+                    cmd.append("-f")
+                cmd.extend(["-b", branch_name, worktree_path])
+            result = _run(cmd, cwd=repo_path)
             if result.returncode != 0:
                 raise RuntimeError(f"Failed to create git worktree: {result.stderr.strip()}")
 
@@ -218,6 +373,15 @@ class WorkspaceManager:
         if strategy == "copy":
             baseline_path = os.path.join(run_dir, "baseline")
             workspace_path = os.path.join(run_dir, "workspace")
+            # Idempotent resume: if both baseline + workspace exist, reuse them.
+            if os.path.isdir(baseline_path) and os.path.isdir(workspace_path):
+                return Workspace(
+                    repo_path=repo_path,
+                    path=workspace_path,
+                    strategy="copy",
+                    run_dir=run_dir,
+                    baseline_path=baseline_path,
+                )
             if os.path.exists(baseline_path):
                 shutil.rmtree(baseline_path, ignore_errors=True)
             if os.path.exists(workspace_path):
@@ -259,3 +423,209 @@ class WorkspaceManager:
 
         raise ValueError(f"Unknown workspace strategy: {strategy}")
 
+    def create_candidate(
+        self,
+        *,
+        repo_path: str,
+        source_path: Optional[str] = None,
+        run_id: str,
+        iteration: int,
+        candidate_id: str,
+        strategy: str = "auto",
+        use_git_worktree: bool = True,
+        copy_ignore_patterns: Optional[List[str]] = None,
+    ) -> Workspace:
+        repo_path = os.path.abspath(repo_path)
+        source_root = os.path.abspath(source_path or repo_path)
+        os.makedirs(repo_path, exist_ok=True)
+        run_id = _validate_dir_name(run_id, label="run_id")
+        candidate_slug = _sanitize_component(candidate_id, max_len=80)
+        run_dir = _safe_join(self.base_dir, run_id, f"iter_{iteration}", f"cand_{candidate_slug}")
+        os.makedirs(run_dir, exist_ok=True)
+
+        ignore_patterns = _default_copy_ignore_patterns(copy_ignore_patterns)
+        if os.path.commonpath([source_root, self.base_dir]) == source_root:
+            ignore_patterns.append(os.path.relpath(self.base_dir, source_root).split(os.sep)[0])
+
+        if strategy == "auto":
+            if use_git_worktree and is_git_repo(repo_path) and has_git_commit(repo_path):
+                strategy = "worktree"
+            else:
+                strategy = "copy"
+
+        if strategy == "worktree":
+            if not is_git_repo(repo_path) or not has_git_commit(repo_path):
+                raise RuntimeError("Requested git worktree strategy but repo is not a git repo with commits.")
+            worktree_path = os.path.join(run_dir, "worktree")
+            branch_suffix = _sanitize_component(candidate_id, max_len=80)
+            branch_name = f"orchestrator/{run_id}/iter_{iteration}_{branch_suffix}"
+            # Idempotent resume: if worktree path already exists and is a git worktree, reuse it.
+            if os.path.isdir(worktree_path) and is_git_repo(worktree_path):
+                return Workspace(
+                    repo_path=repo_path,
+                    path=worktree_path,
+                    strategy="worktree",
+                    run_dir=run_dir,
+                    baseline_path=None,
+                    branch_name=branch_name,
+                )
+
+            # If the branch is already checked out somewhere (common on crash-resume), reuse that worktree.
+            existing_path = _find_worktree_for_branch(repo_path, branch_name)
+            if existing_path:
+                if os.path.isdir(existing_path) and is_git_repo(existing_path):
+                    return Workspace(
+                        repo_path=repo_path,
+                        path=existing_path,
+                        strategy="worktree",
+                        run_dir=run_dir,
+                        baseline_path=None,
+                        branch_name=branch_name,
+                    )
+                _cleanup_stale_worktree(repo_path, existing_path)
+
+            # Create or attach the worktree.
+            force_add = _cleanup_stale_worktree(repo_path, worktree_path)
+            if _git_branch_exists(repo_path, branch_name):
+                cmd = ["git", "worktree", "add"]
+                if force_add:
+                    cmd.append("-f")
+                cmd.extend([worktree_path, branch_name])
+            else:
+                cmd = ["git", "worktree", "add"]
+                if force_add:
+                    cmd.append("-f")
+                cmd.extend(["-b", branch_name, worktree_path])
+            result = _run(cmd, cwd=repo_path)
+            if result.returncode != 0:
+                raise RuntimeError(f"Failed to create git worktree: {result.stderr.strip()}")
+            return Workspace(
+                repo_path=repo_path,
+                path=worktree_path,
+                strategy="worktree",
+                run_dir=run_dir,
+                baseline_path=None,
+                branch_name=branch_name,
+            )
+
+        if strategy == "copy":
+            baseline_path = os.path.join(run_dir, "baseline")
+            workspace_path = os.path.join(run_dir, "workspace")
+            # Idempotent resume: if both baseline + workspace exist, reuse them.
+            if os.path.isdir(baseline_path) and os.path.isdir(workspace_path):
+                return Workspace(
+                    repo_path=repo_path,
+                    path=workspace_path,
+                    strategy="copy",
+                    run_dir=run_dir,
+                    baseline_path=baseline_path,
+                )
+            if os.path.exists(baseline_path):
+                shutil.rmtree(baseline_path, ignore_errors=True)
+            if os.path.exists(workspace_path):
+                shutil.rmtree(workspace_path, ignore_errors=True)
+            shutil.copytree(
+                source_root,
+                baseline_path,
+                ignore=shutil.ignore_patterns(*ignore_patterns),
+                dirs_exist_ok=False,
+            )
+            shutil.copytree(baseline_path, workspace_path, dirs_exist_ok=False)
+            return Workspace(
+                repo_path=repo_path,
+                path=workspace_path,
+                strategy="copy",
+                run_dir=run_dir,
+                baseline_path=baseline_path,
+            )
+
+        if strategy == "in_place":
+            baseline_path = os.path.join(run_dir, "baseline")
+            # Idempotent resume: reuse baseline snapshot if it already exists.
+            if os.path.isdir(baseline_path):
+                return Workspace(
+                    repo_path=repo_path,
+                    path=repo_path,
+                    strategy="in_place",
+                    run_dir=run_dir,
+                    baseline_path=baseline_path,
+                )
+            if os.path.exists(baseline_path):
+                shutil.rmtree(baseline_path, ignore_errors=True)
+            shutil.copytree(
+                source_root,
+                baseline_path,
+                ignore=shutil.ignore_patterns(*ignore_patterns),
+                dirs_exist_ok=False,
+            )
+            return Workspace(
+                repo_path=repo_path,
+                path=repo_path,
+                strategy="in_place",
+                run_dir=run_dir,
+                baseline_path=baseline_path,
+            )
+
+        raise ValueError(f"Unknown workspace strategy: {strategy}")
+
+    def resume_candidate(
+        self,
+        *,
+        repo_path: str,
+        run_id: str,
+        iteration: int,
+        candidate_id: str,
+        workspace_path: Optional[str],
+        workspace_strategy: Optional[str],
+    ) -> Optional[Workspace]:
+        """Rehydrate a candidate workspace from persisted state (best-effort)."""
+        if not workspace_strategy:
+            return None
+        repo_path = os.path.abspath(repo_path)
+        strategy = str(workspace_strategy)
+        if strategy == "worktree":
+            if workspace_path and os.path.isdir(workspace_path) and is_git_repo(workspace_path):
+                run_dir = os.path.dirname(workspace_path)
+                return Workspace(
+                    repo_path=repo_path,
+                    path=workspace_path,
+                    strategy="worktree",
+                    run_dir=run_dir,
+                    baseline_path=None,
+                    branch_name=None,
+                )
+            return None
+        if strategy == "copy":
+            if not workspace_path:
+                return None
+            run_dir = os.path.dirname(workspace_path)
+            baseline_path = os.path.join(run_dir, "baseline")
+            if os.path.isdir(workspace_path) and os.path.isdir(baseline_path):
+                return Workspace(
+                    repo_path=repo_path,
+                    path=workspace_path,
+                    strategy="copy",
+                    run_dir=run_dir,
+                    baseline_path=baseline_path,
+                )
+            return None
+        if strategy == "in_place":
+            candidate_slug = _sanitize_component(candidate_id, max_len=80)
+            run_dir = _safe_join(self.base_dir, run_id, f"iter_{iteration}", f"cand_{candidate_slug}")
+            baseline_path = os.path.join(run_dir, "baseline")
+            if os.path.isdir(baseline_path):
+                return Workspace(
+                    repo_path=repo_path,
+                    path=repo_path,
+                    strategy="in_place",
+                    run_dir=run_dir,
+                    baseline_path=baseline_path,
+                )
+            return Workspace(
+                repo_path=repo_path,
+                path=repo_path,
+                strategy="in_place",
+                run_dir=run_dir,
+                baseline_path=None,
+            )
+        return None

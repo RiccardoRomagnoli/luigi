@@ -121,6 +121,12 @@ orchestrator:
 | `claude_code.max_turns` | Limit on the number of agentic turns for Claude Code | `50` |
 | `orchestrator.max_iterations` | Maximum review-implement cycles before giving up | `5` |
 | `orchestrator.working_dir` | Base directory for git worktrees | `./workspace` |
+| `orchestrator.auto_merge_on_approval` | Auto-merge approved worktree branches into the target branch | `true` |
+| `orchestrator.merge_target_branch` | Branch to merge into | `main` |
+| `orchestrator.merge_style` | Merge strategy (`merge_commit`) | `merge_commit` |
+| `orchestrator.dirty_main_policy` | How to handle uncommitted target branch changes (`commit` or `abort`) | `commit` |
+| `orchestrator.delete_branch_on_merge` | Delete worktree branch after successful merge | `true` |
+| `orchestrator.delete_worktree_on_merge` | Remove worktree after successful merge | `true` |
 
 ---
 

@@ -181,6 +181,14 @@ orchestrator:
   cleanup: "on_success"        # always | on_success | never
   apply_changes_on_success: true
   commit_on_approval: true
+  auto_merge_on_approval: true
+  merge_target_branch: "main"
+  merge_style: "merge_commit"
+  dirty_main_policy: "commit"
+  dirty_main_commit_message: "Auto-commit local changes before Luigi merge (run {run_id})"
+  merge_commit_message: "Merge {branch} into {target} (run {run_id})"
+  delete_branch_on_merge: true
+  delete_worktree_on_merge: true
 
 testing:
   timeout_sec: 1800

@@ -30,6 +30,18 @@ class ResumeRunIdTest(unittest.TestCase):
             self.assertEqual(resume_id, run_id)
             self.assertEqual(resume_state.get("repo_path"), repo_path)
 
+    def test_load_resume_state_by_id_rejects_path_traversal(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="luigi-logs-") as tmp:
+            repo_path = os.path.join(tmp, "repo")
+            os.makedirs(repo_path, exist_ok=True)
+
+            with self.assertRaises(RuntimeError):
+                main._load_resume_state_by_id(
+                    logs_root=tmp,
+                    repo_path=repo_path,
+                    run_id="../evil",
+                )
+
     def test_load_resume_state_by_id_rejects_mismatch(self) -> None:
         with tempfile.TemporaryDirectory(prefix="luigi-logs-") as tmp:
             run_id = "run-456"

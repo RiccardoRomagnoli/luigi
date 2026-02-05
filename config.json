@@ -10,6 +10,25 @@
     "allowed_tools": ["Bash", "Read", "Edit", "Write", "Glob", "Grep"],
     "max_turns": 50
   },
+  "agents": {
+    "reviewers": [
+      { "id": "reviewer-1", "kind": "codex" }
+    ],
+    "executors": [
+      { "id": "executor-1", "kind": "claude" }
+    ],
+    "assignment": {
+      "mode": "round_robin",
+      "executors_per_plan": 1
+    }
+  },
+  "telegram": {
+    "enabled": false,
+    "bot_token": "",
+    "chat_id": "",
+    "allowed_user_ids": [],
+    "poll_interval_sec": 2.0
+  },
   "orchestrator": {
     "max_iterations": 5,
     "max_claude_question_rounds": 5,
@@ -19,8 +38,18 @@
     "use_git_worktree": true,
     "cleanup": "on_success",
     "apply_changes_on_success": true,
+    "carry_forward_workspace_between_iterations": true,
     "commit_on_approval": true,
     "commit_message": "Task complete: {task} (run {run_id})",
+    "auto_merge_on_approval": true,
+    "merge_target_branch": "main",
+    "merge_style": "merge_commit",
+    "dirty_main_policy": "commit",
+    "dirty_main_commit_message": "Auto-commit local changes before Luigi merge (run {run_id})",
+    "merge_commit_message": "Merge {branch} into {target} (run {run_id})",
+    "delete_branch_on_merge": true,
+    "delete_worktree_on_merge": true,
+    "session_mode": true,
     "ui": {
       "enabled": true,
       "host": "127.0.0.1",
