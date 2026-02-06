@@ -24,8 +24,8 @@ def _plan_schema_path() -> str:
 def _review_schema_path() -> str:
     return os.path.join(_schemas_dir(), "codex_review.schema.json")
 
-def _answer_schema_path() -> str:
-    return os.path.join(_schemas_dir(), "codex_answer.schema.json")
+def _reviewer_answer_schema_path() -> str:
+    return os.path.join(_schemas_dir(), "reviewer_answer.schema.json")
 
 
 class CodexClient:
@@ -218,7 +218,7 @@ class CodexClient:
         review = self._run_codex_json(prompt=prompt, schema_path=_review_schema_path(), cwd=cwd)
         return self._validate_review(review)
 
-    def answer_claude(
+    def answer_executor(
         self,
         *,
         questions: list[str],
@@ -226,9 +226,17 @@ class CodexClient:
         user_context: str = "",
         cwd: str,
     ) -> Dict[str, Any]:
-        """Answer Claude's questions. If Codex needs more info, it should ask the user."""
-        prompt = self._answer_claude_prompt(questions=questions, context=context, user_context=user_context)
-        answer = self._run_codex_json(prompt=prompt, schema_path=_answer_schema_path(), cwd=cwd)
+        """Answer an executor's questions. If Codex needs more info, it should ask the user."""
+        prompt = self._answer_executor_prompt(
+            questions=questions,
+            context=context,
+            user_context=user_context,
+        )
+        answer = self._run_codex_json(
+            prompt=prompt,
+            schema_path=_reviewer_answer_schema_path(),
+            cwd=cwd,
+        )
         return self._validate_answer(answer)
 
     def _run_codex_json(self, *, prompt: str, schema_path: str, cwd: str) -> Dict[str, Any]:
@@ -398,10 +406,10 @@ class CodexClient:
         )
 
     @staticmethod
-    def _answer_claude_prompt(*, questions: list[str], context: Dict[str, Any], user_context: str) -> str:
+    def _answer_executor_prompt(*, questions: list[str], context: Dict[str, Any], user_context: str) -> str:
         return (
-            "PHASE: ANSWER_CLAUDE\n"
-            "You are Codex. Claude (the implementer) is asking questions.\n"
+            "PHASE: ANSWER_EXECUTOR\n"
+            "You are Codex acting as a reviewer. The executor is asking questions.\n"
             "Answer concisely and with actionable guidance.\n"
             "- Always include ALL top-level fields: status, answer, questions, notes.\n"
             "- Use null or empty arrays for fields that do not apply.\n"
@@ -410,7 +418,7 @@ class CodexClient:
             "Otherwise output JSON with:\n"
             '  {"status":"ANSWER","answer":"..."}\n'
             "Output MUST be valid JSON matching the provided schema.\n\n"
-            f"Claude questions:\n{json.dumps(questions, indent=2)}\n\n"
+            f"Executor questions:\n{json.dumps(questions, indent=2)}\n\n"
             f"Context JSON:\n{json.dumps(context, indent=2)}\n\n"
             + (f"User context / answers:\n{user_context}\n" if user_context else "")
         )

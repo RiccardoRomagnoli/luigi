@@ -4,9 +4,13 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "status": { "type": "string", "enum": ["DONE", "FAILED"] },
+    "status": { "type": "string", "enum": ["DONE", "FAILED", "NEEDS_REVIEWER"] },
+    "questions": {
+      "type": ["array", "null"],
+      "items": { "type": "string", "minLength": 1 }
+    },
     "summary": { "type": ["string", "null"] },
     "notes": { "type": ["string", "null"] }
   },
-  "required": ["status", "summary", "notes"]
+  "required": ["status", "questions", "summary", "notes"]
 }

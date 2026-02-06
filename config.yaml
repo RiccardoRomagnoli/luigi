@@ -14,7 +14,8 @@ claude_code:
     - "Write"
     - "Glob"
     - "Grep"
-  max_turns: 50
+  # Turn limit for Claude Code CLI. Use null/0 to omit the flag (unlimited).
+  max_turns: null
 
 agents:
   reviewers:
@@ -35,9 +36,11 @@ telegram:
   poll_interval_sec: 2.0
 
 orchestrator:
-  max_iterations: 5
-  # If Claude asks Codex questions, how many ask/answer rounds to allow per iteration.
-  max_claude_question_rounds: 5
+  # Iteration limit. Use null/0 for unlimited.
+  max_iterations: null
+  # If an executor requests reviewer input (status NEEDS_REVIEWER), how many ask/answer
+  # rounds to allow per iteration. Use null/0 for unlimited.
+  max_claude_question_rounds: null
   # Default locations when running as a global CLI:
   working_dir: "~/.luigi/workspaces"
   logs_dir: "~/.luigi/logs"

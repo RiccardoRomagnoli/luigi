@@ -134,7 +134,7 @@ def extract_codex_events(lines: list[str]) -> list[ActivityEvent]:
             "PLAN": "Planning",
             "REFINE_PLAN": "Refining plan",
             "REVIEW": "Reviewing",
-            "ANSWER_CLAUDE": "Answering Claude",
+            "ANSWER_EXECUTOR": "Answering executor",
         }
         phase = phase_map.get(phase_raw, phase_raw.lower() or "running")
         # Phase marker

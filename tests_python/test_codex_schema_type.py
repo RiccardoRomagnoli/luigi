@@ -7,7 +7,7 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 SCHEMA_FILES = [
     "schemas/codex_plan.schema.json",
     "schemas/codex_review.schema.json",
-    "schemas/codex_answer.schema.json",
+    "schemas/reviewer_answer.schema.json",
     "schemas/reviewer_decision.schema.json",
     "schemas/executor_result.schema.json",
 ]

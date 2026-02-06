@@ -139,7 +139,8 @@ If none are found, it uses the built-in `config.yaml` shipped with the package.
   - **`worktree`**: always use a git worktree on a new branch
   - **`copy`**: snapshot + work in a copy + apply back on approval
 - **`orchestrator.cleanup`**: `on_success` (recommended) | `always` | `never`
-- **`orchestrator.max_iterations`**: max plan/execute/test/review loops per task
+- **`orchestrator.max_iterations`**: max plan/execute/test/review loops per task (`null`/`0` = unlimited)
+- **`orchestrator.max_claude_question_rounds`**: max reviewer Q&A rounds when an agent requests clarification (`null`/`0` = unlimited)
 - **`orchestrator.session_mode`**: keep Luigi running for multiple tasks
 - **`orchestrator.resume_on_start`**: auto-resume newest “running” run when starting UI-first
 - **`orchestrator.carry_forward_workspace_between_iterations`**: when an iteration is rejected, carry the selected candidate's changes into the next iteration (default: `true`)
@@ -258,7 +259,7 @@ The UI supports:
 
 Luigi runs agents in non-interactive mode (`codex exec` / `claude -p`) but supports Q&A:
 
-- **Claude needs clarification**: Claude returns `structured_output.status="NEEDS_CODEX"` + questions. Luigi asks Codex, then resumes Claude with Codex’s answer.
+- **Executor needs clarification**: an executor returns `NEEDS_REVIEWER` + questions (Claude: `structured_output.status="NEEDS_REVIEWER"`). Luigi asks the configured reviewers (Codex/Claude), then resumes the executor with their answers. (Back-compat: `NEEDS_CODEX` is still accepted.)
 - **Reviewer needs clarification**: a reviewer returns `{"status":"NEEDS_USER_INPUT","questions":[...]}`. Luigi surfaces questions in the UI (or in the terminal if no UI is running).
 - **Admin decision required** (multi-agent disagreement): Luigi surfaces a chooser in the UI and can also send the decision prompt to Telegram (if enabled).
 
