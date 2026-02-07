@@ -26,6 +26,21 @@ class MultiAgentUtilsTest(unittest.TestCase):
         self.assertTrue(result["consensus"])
         self.assertEqual(result["winner"], "c1")
 
+    def test_validate_reviewer_decision_disallows_next_prompt_on_approved(self) -> None:
+        with self.assertRaises(RuntimeError):
+            main._validate_reviewer_decision(
+                {
+                    "status": "APPROVED",
+                    "winner_candidate_id": "c1",
+                    "summary": "ok",
+                    "feedback": "minor",
+                    "next_prompt": "do more work",
+                    "questions": [],
+                    "notes": None,
+                },
+                {"c1"},
+            )
+
     def test_parse_admin_choice(self) -> None:
         parsed = main._parse_admin_choice("choose 2\nnotes: add context\nextra line")
         self.assertEqual(parsed["choice"], 2)

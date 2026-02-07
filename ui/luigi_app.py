@@ -805,6 +805,12 @@ def main() -> None:
         labels = [str(opt.get("label", f"Option {idx+1}")) for idx, opt in enumerate(options)]
         if labels:
             choice = st.radio("Choose an option", options=list(range(1, len(labels) + 1)), format_func=lambda i: labels[i - 1])
+            selected_idx = int(choice) - 1
+            selected_opt = options[selected_idx] if 0 <= selected_idx < len(options) else None
+            if isinstance(selected_opt, dict):
+                with st.expander("Selected option details", expanded=False):
+                    # Show the full decision payload so admins understand what they're choosing.
+                    st.json(selected_opt)
             notes = st.text_area("Notes (optional)")
             if st.button("Submit decision", type="primary"):
                 _write_admin_decision(log_dir, request_id, int(choice), notes.strip())

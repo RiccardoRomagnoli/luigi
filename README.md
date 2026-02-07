@@ -144,12 +144,15 @@ If none are found, it uses the built-in `config.yaml` shipped with the package.
 - **`orchestrator.session_mode`**: keep Luigi running for multiple tasks
 - **`orchestrator.resume_on_start`**: auto-resume newest “running” run when starting UI-first
 - **`orchestrator.carry_forward_workspace_between_iterations`**: when an iteration is rejected, carry the selected candidate's changes into the next iteration (default: `true`)
-- **`orchestrator.auto_merge_on_approval`**: automatically merge approved worktree branches into `merge_target_branch`
-- **`orchestrator.merge_target_branch`**: branch to merge into (default: `main`)
+- **`orchestrator.auto_merge_on_approval`**: automatically merge approved worktree branches into `merge_target_branch` (default: `false`)
+- **`orchestrator.merge_target_branch`**: branch to merge into when auto-merge is enabled (default: `main`)
 - **`orchestrator.merge_style`**: currently supports `merge_commit`
 - **`orchestrator.dirty_main_policy`**: how to handle uncommitted changes on the target branch (`commit` or `abort`)
 - **`orchestrator.delete_branch_on_merge`**: delete the local worktree branch after a successful auto-merge
 - **`orchestrator.delete_worktree_on_merge`**: remove the worktree after a successful auto-merge
+- **`orchestrator.branch_prefix`**: prefix for worktree branches (default: `luigi`)
+- **`orchestrator.branch_name_length`**: run id length used in branch names (default: `8`)
+- **`orchestrator.branch_suffix_length`**: candidate hash length for branch names (default: `6`)
 
 #### Carry-forward behavior (multi-agent)
 
@@ -192,7 +195,7 @@ When multiple reviewers/executors are configured, Luigi can run **multiple candi
   - `on_success`: remove only if approved + persisted
   - `never`: keep everything
 
-Note: Luigi removes worktree directories based on `orchestrator.cleanup`. If `auto_merge_on_approval` is enabled, it can also delete the worktree and local branch via `delete_worktree_on_merge` / `delete_branch_on_merge`.
+Note: Luigi removes worktree directories based on `orchestrator.cleanup`. If `auto_merge_on_approval` is enabled, it can also delete the worktree and local branch via `delete_worktree_on_merge` / `delete_branch_on_merge`. When auto-merge is disabled, Luigi leaves the short feature branch for manual admin merge.
 When auto-merge is enabled and a conflict occurs, Luigi invokes Claude Code to resolve it using the approved plan and review context.
 
 ### Telegram integration (`telegram.*`) (optional)

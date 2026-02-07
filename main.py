@@ -221,16 +221,22 @@ def _review_candidates_prompt(
     phase = "HANDOFF" if final_handoff else "REVIEW_CANDIDATES"
     return (
         f"PHASE: {phase}\n"
-        "You are a reviewer. Choose the best candidate and summarize next steps.\n"
+        "You are a reviewer. Choose the best candidate and decide whether the task is done.\n"
         "IMPORTANT: You are running in restricted tool mode (Read/Glob/Grep only). Do NOT attempt to run shell commands.\n"
         "Output JSON matching the reviewer_decision schema:\n"
         "- Always include: status, winner_candidate_id, summary, feedback, next_prompt, questions, notes.\n"
         '- If you need clarification from the admin, set status to "NEEDS_USER_INPUT" and add questions.\n'
         "- Otherwise use status APPROVED or REJECTED.\n"
+        "CRITICAL semantics:\n"
+        '- status="APPROVED" means Luigi will STOP iterating and persist/commit the selected candidate.\n'
+        '- Only set APPROVED if all user requirements are fully satisfied.\n'
+        '- If ANY required work remains (missing features, bugs, failing tests, or unverified claims), set status="REJECTED".\n'
+        '- If status is APPROVED, set next_prompt to null.\n'
+        "- If status is REJECTED, next_prompt should be a concise prompt for the next iteration.\n"
         "- winner_candidate_id must be one of the candidates.\n"
         "- summary: short admin-facing summary of what happened.\n"
-        "- feedback: concrete guidance to apply in the next iteration.\n"
-        "- next_prompt: a concise prompt for the next iteration.\n\n"
+        "- feedback: concrete guidance; include remaining work here if REJECTED.\n"
+        "- next_prompt: prompt for next iteration (null if APPROVED).\n\n"
         f"User task:\n{task}\n\n"
         f"Candidates:\n{candidates_text}\n\n"
         + (f"User context / answers:\n{user_context}\n" if user_context else "")
@@ -359,6 +365,16 @@ def _await_admin_decision(
         time.sleep(poll_interval_sec)
 
 
+def _preview_one_line(text: str, *, max_len: int = 220) -> str:
+    """Format a long multi-line text as a short one-line preview."""
+    compact = " ".join((text or "").strip().split())
+    if not compact:
+        return ""
+    if len(compact) <= max_len:
+        return compact
+    return compact[: max(0, max_len - 1)] + "…"
+
+
 def _assign_executors(
     reviewer_ids: List[str],
     executors: List[AgentSpec],
@@ -427,6 +443,16 @@ def _validate_reviewer_decision(decision: Dict[str, Any], candidate_ids: set[str
         raise RuntimeError(
             f"Reviewer decision invalid: winner_candidate_id {winner!r} not in candidates."
         )
+    # Guardrail: APPROVED must not carry a "next iteration" prompt.
+    # If a reviewer provides a non-empty next_prompt, they are implicitly indicating remaining work,
+    # which should be expressed as REJECTED instead.
+    if status == "APPROVED":
+        next_prompt = decision.get("next_prompt")
+        if isinstance(next_prompt, str) and next_prompt.strip():
+            raise RuntimeError(
+                "Reviewer decision invalid: status=APPROVED requires next_prompt=null. "
+                "If work remains, use status=REJECTED and provide next_prompt."
+            )
     return decision
 
 
@@ -570,6 +596,17 @@ def run_multi_agent_session(
         config.get("orchestrator", {}).get("max_claude_question_rounds", 5),
         default=5,
     )
+    branch_prefix = config.get("orchestrator", {}).get("branch_prefix", "luigi")
+    try:
+        branch_name_length = int(config.get("orchestrator", {}).get("branch_name_length", 8))
+    except Exception:
+        branch_name_length = 8
+    try:
+        branch_suffix_length = int(
+            config.get("orchestrator", {}).get("branch_suffix_length", 6)
+        )
+    except Exception:
+        branch_suffix_length = 6
     workspace_strategy = config.get("orchestrator", {}).get("workspace_strategy", "auto")
     use_git_worktree = config.get("orchestrator", {}).get("use_git_worktree", True)
     cleanup_policy = config.get("orchestrator", {}).get(
@@ -854,12 +891,209 @@ def run_multi_agent_session(
         final_workspace = None
         state_manager.update_state("approved", False)
 
-        while not approved and (max_iterations is None or iteration < max_iterations):
+        while not approved:
             is_resume_iteration = resuming and not resume_used and resume_iteration > 0
-            if is_resume_iteration:
-                iteration = resume_iteration
-            else:
-                iteration += 1
+
+            next_iteration = resume_iteration if is_resume_iteration else (iteration + 1)
+            if max_iterations is not None and next_iteration > max_iterations:
+                # Iteration limit reached. Ask admin whether to accept partial output or extend.
+                ui_active = ui is not None and ui.is_running()
+                if not ui_active and not telegram_client:
+                    break
+
+                # "task" may have been overwritten with the next-iteration prompt in rejected runs.
+                missing_summary = str(task or "").strip()
+                if not missing_summary:
+                    reviews_obj = state_manager.get_state("reviews")
+                    if isinstance(reviews_obj, dict):
+                        parts: list[str] = []
+                        for rid, d in reviews_obj.items():
+                            if not isinstance(d, dict):
+                                continue
+                            nxt = str(d.get("next_prompt") or "").strip()
+                            if nxt:
+                                parts.append(f"[{rid}] {nxt}")
+                        missing_summary = "\n\n".join(parts).strip()
+
+                if telegram_client and missing_summary:
+                    _send_telegram_message(
+                        state_manager=state_manager,
+                        telegram=telegram_client,
+                        text=(
+                            f"Max iterations reached (iteration {iteration} / {max_iterations}).\n\n"
+                            "Summary of remaining work (from reviewers/next prompt):\n"
+                            f"{missing_summary}"
+                        ),
+                        label="max_iterations_summary",
+                    )
+
+                preview = _preview_one_line(missing_summary, max_len=160) or "(no summary available)"
+                extend_by = 5
+                options = [
+                    {
+                        "label": f"Stop now and accept partial result (missing: {preview})",
+                        "action": "accept_partial",
+                        "missing_summary": missing_summary,
+                        "iteration": iteration,
+                        "max_iterations": max_iterations,
+                    },
+                    {
+                        "label": f"Continue for {extend_by} more iterations",
+                        "action": "extend",
+                        "extend_by": extend_by,
+                        "iteration": iteration,
+                        "max_iterations": max_iterations,
+                    },
+                ]
+                admin_choice = _await_admin_decision(
+                    state_manager=state_manager,
+                    options=options,
+                    ui_active=ui_active,
+                    telegram=telegram_client,
+                    poll_interval_sec=user_input_poll_interval_sec,
+                    timeout_sec=user_input_timeout_sec,
+                )
+                choice_idx = int(admin_choice.get("choice") or 1) - 1
+                choice_idx = max(0, min(choice_idx, len(options) - 1))
+                selection = options[choice_idx]
+                if selection.get("action") == "extend":
+                    max_iterations = int(max_iterations) + int(selection.get("extend_by") or extend_by)
+                    _note(f"Admin extended max_iterations to {max_iterations}.")
+                    state_manager.add_to_history(f"Admin extended max_iterations to {max_iterations}.")
+                    continue
+
+                # Accept partial: mark approved and persist the current best workspace.
+                state_manager.add_to_history(
+                    "Admin accepted partial result after reaching max iterations."
+                )
+                state_manager.update_state("max_iterations_missing_summary", missing_summary)
+                state_manager.update_state("approved_by_admin", True)
+                approved = True
+                state_manager.update_state("approved", True)
+
+                selected_workspace = final_workspace
+                if not selected_workspace and final_selected_candidate:
+                    try:
+                        selected_workspace = candidate_workspaces.get(final_selected_candidate.get("id"))
+                    except Exception:
+                        selected_workspace = None
+
+                if selected_workspace:
+                    try:
+                        if selected_workspace.strategy == "worktree" and commit_on_approval:
+                            # Prefer the original user task for commit messages; `task` may have been overwritten.
+                            commit_task = state_manager.get_state("task")
+                            commit_message = commit_message_template.format(
+                                task=commit_task or task, run_id=state_manager.run_id
+                            )
+                            commit_sha = selected_workspace.commit_changes(commit_message)
+                            state_manager.update_state("commit_sha", commit_sha)
+                            state_manager.update_state("branch_name", selected_workspace.branch_name)
+                            if selected_workspace.branch_name:
+                                print(f"Committed to branch: {selected_workspace.branch_name}")
+                            if commit_sha:
+                                print(f"Commit: {commit_sha}")
+                            if auto_merge_on_approval:
+                                merge_branch = selected_workspace.branch_name
+                                merge_message = merge_commit_message_template.format(
+                                    task=str(state_manager.get_state("task") or ""),
+                                    run_id=state_manager.run_id,
+                                    branch=merge_branch or "",
+                                    target=merge_target_branch,
+                                )
+                                dirty_message_template = dirty_main_commit_message_template
+                                merge_client = _pick_merge_claude_client(
+                                    claude_clients,
+                                    preferred_id=final_selected_candidate.get("executor_id")
+                                    if isinstance(final_selected_candidate, dict)
+                                    else None,
+                                )
+                                selected_plan = None
+                                if isinstance(final_selected_candidate, dict):
+                                    selected_plan = reviewer_plans.get(
+                                        final_selected_candidate.get("reviewer_id")
+                                    )
+                                state_manager.update_state("merge_branch", merge_branch)
+                                state_manager.update_state("merge_target_branch", merge_target_branch)
+                                state_manager.update_state("stage", "merging")
+                                state_manager.update_state("merge_status", "running")
+                                merge_result = _auto_merge_worktree_branch(
+                                    repo_path=original_repo_path,
+                                    branch_name=merge_branch,
+                                    target_branch=merge_target_branch,
+                                    merge_style=merge_style,
+                                    dirty_main_policy=dirty_main_policy,
+                                    dirty_main_commit_message_template=dirty_message_template,
+                                    merge_commit_message=merge_message,
+                                    claude_client=merge_client,
+                                    task=str(state_manager.get_state("task") or task or ""),
+                                    run_id=state_manager.run_id,
+                                    plan=selected_plan,
+                                    reviewer_decisions=reviewer_decisions,
+                                    candidate=final_selected_candidate,
+                                    note_fn=_note,
+                                )
+                                state_manager.update_state(
+                                    "merge_status",
+                                    "merged" if merge_result.get("merged") else "failed",
+                                )
+                                state_manager.update_state(
+                                    "merge_commit_sha", merge_result.get("merge_commit_sha")
+                                )
+                                state_manager.update_state(
+                                    "dirty_main_commit_sha",
+                                    merge_result.get("dirty_main_commit_sha"),
+                                )
+                                if merge_result.get("conflict_files"):
+                                    state_manager.update_state(
+                                        "merge_conflict_files", merge_result.get("conflict_files")
+                                    )
+                                if merge_result.get("claude_merge_summary"):
+                                    state_manager.update_state(
+                                        "merge_resolution_summary",
+                                        merge_result.get("claude_merge_summary"),
+                                    )
+                                if merge_result.get("merged"):
+                                    persisted = True
+                                    merged_to_target_branch = True
+                                    if delete_worktree_on_merge:
+                                        force_cleanup_worktree = True
+                                    if delete_branch_on_merge and merge_branch:
+                                        delete_branch_after_merge = True
+                                        merge_branch_to_delete = merge_branch
+                                else:
+                                    persisted = False
+                                    err = merge_result.get("error") or "unknown merge error"
+                                    state_manager.add_to_history(f"Auto-merge failed: {err}")
+                                    state_manager.update_state("merge_error", err)
+                                    print(f"Auto-merge failed: {err}")
+                            else:
+                                persisted = True
+                        elif selected_workspace.strategy == "copy" and apply_changes_on_success:
+                            selected_workspace.apply_to_repo()
+                            persisted = True
+                            print(f"Applied changes to repo: {repo_path}")
+                        else:
+                            persisted = True
+                    except Exception as e:
+                        persisted = False
+                        state_manager.add_to_history(f"Persistence step failed: {e}")
+                        print(f"Persistence step failed: {e}")
+                    state_manager.update_state("persisted", persisted)
+                    state_manager.update_state(
+                        "stage", "complete" if persisted else "persistence_failed"
+                    )
+                else:
+                    persisted = False
+                    state_manager.add_to_history(
+                        "Admin requested partial acceptance, but no selected workspace was available to persist."
+                    )
+                    state_manager.update_state("persisted", False)
+
+                break
+
+            # Start the next iteration
+            iteration = next_iteration
             state_manager.update_state("iteration", iteration)
 
             reviewer_plans: Dict[str, Dict[str, Any]] = {}
@@ -995,6 +1229,9 @@ def run_multi_agent_session(
                             candidate_id=cid,
                             strategy=strategy or candidate_strategy,
                             use_git_worktree=use_git_worktree,
+                            branch_prefix=branch_prefix,
+                            branch_name_length=branch_name_length,
+                            branch_suffix_length=branch_suffix_length,
                         )
                         cand["workspace_path"] = ws.path
                         cand["workspace_strategy"] = ws.strategy
@@ -1013,6 +1250,9 @@ def run_multi_agent_session(
                         candidate_id=candidate_id,
                         strategy=candidate_strategy,
                         use_git_worktree=use_git_worktree,
+                        branch_prefix=branch_prefix,
+                        branch_name_length=branch_name_length,
+                        branch_suffix_length=branch_suffix_length,
                     )
                     candidate_workspaces[candidate_id] = workspace
                     candidates[candidate_id] = {
@@ -2680,6 +2920,11 @@ def main():
     auto_merge_on_approval = bool(config.get("orchestrator", {}).get("auto_merge_on_approval", False))
     merge_target_branch = config.get("orchestrator", {}).get("merge_target_branch", "main")
     merge_style = config.get("orchestrator", {}).get("merge_style", "merge_commit")
+    branch_prefix = config.get("orchestrator", {}).get("branch_prefix", "luigi")
+    branch_name_length = _optional_positive_int(
+        config.get("orchestrator", {}).get("branch_name_length", 8),
+        default=8,
+    ) or 8
     dirty_main_policy = config.get("orchestrator", {}).get("dirty_main_policy", "commit")
     dirty_main_commit_message_template = config.get(
         "orchestrator",
@@ -2749,6 +2994,8 @@ def main():
             run_id=state_manager.run_id,
             strategy=workspace_strategy,
             use_git_worktree=use_git_worktree,
+            branch_prefix=branch_prefix,
+            branch_name_length=branch_name_length,
         )
     state_manager.update_state("workspace_path", workspace.path)
     state_manager.update_state("workspace_strategy", workspace.strategy)
@@ -2820,8 +3067,76 @@ def main():
                 config.get("orchestrator", {}).get("max_iterations", 5),
                 default=5,
             )
-            while not approved and (max_iterations is None or iteration < max_iterations):
-                iteration += 1
+            while not approved:
+                next_iteration = iteration + 1
+                if max_iterations is not None and next_iteration > max_iterations:
+                    ui_active = ui is not None and ui.is_running()
+                    if not ui_active and not telegram_client:
+                        break
+
+                    missing_summary = str(state_manager.get_state("feedback") or "").strip()
+                    if not missing_summary:
+                        review_obj = state_manager.get_state("review")
+                        if isinstance(review_obj, dict):
+                            missing_summary = str(review_obj.get("feedback") or "").strip()
+
+                    if telegram_client and missing_summary:
+                        _send_telegram_message(
+                            state_manager=state_manager,
+                            telegram=telegram_client,
+                            text=(
+                                f"Max iterations reached (iteration {iteration} / {max_iterations}).\n\n"
+                                "Summary of remaining work (from reviewer feedback):\n"
+                                f"{missing_summary}"
+                            ),
+                            label="max_iterations_summary",
+                        )
+
+                    preview = _preview_one_line(missing_summary, max_len=160) or "(no summary available)"
+                    extend_by = 5
+                    options = [
+                        {
+                            "label": f"Stop now and accept partial result (missing: {preview})",
+                            "action": "accept_partial",
+                            "missing_summary": missing_summary,
+                            "iteration": iteration,
+                            "max_iterations": max_iterations,
+                        },
+                        {
+                            "label": f"Continue for {extend_by} more iterations",
+                            "action": "extend",
+                            "extend_by": extend_by,
+                            "iteration": iteration,
+                            "max_iterations": max_iterations,
+                        },
+                    ]
+                    admin_choice = _await_admin_decision(
+                        state_manager=state_manager,
+                        options=options,
+                        ui_active=ui_active,
+                        telegram=telegram_client,
+                        poll_interval_sec=user_input_poll_interval_sec,
+                        timeout_sec=user_input_timeout_sec,
+                    )
+                    choice_idx = int(admin_choice.get("choice") or 1) - 1
+                    choice_idx = max(0, min(choice_idx, len(options) - 1))
+                    selection = options[choice_idx]
+                    if selection.get("action") == "extend":
+                        max_iterations = int(max_iterations) + int(selection.get("extend_by") or extend_by)
+                        print(f"Admin extended max_iterations to {max_iterations}.")
+                        state_manager.add_to_history(f"Admin extended max_iterations to {max_iterations}.")
+                        continue
+
+                    state_manager.add_to_history(
+                        "Admin accepted partial result after reaching max iterations."
+                    )
+                    state_manager.update_state("max_iterations_missing_summary", missing_summary)
+                    state_manager.update_state("approved_by_admin", True)
+                    approved = True
+                    state_manager.update_state("approved", True)
+                    break
+
+                iteration = next_iteration
                 state_manager.update_state("iteration", iteration)
                 print(f"--- Starting Iteration {iteration} ---")
                 state_manager.add_to_history(f"Iteration {iteration}")

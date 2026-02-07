@@ -50,6 +50,25 @@ def _sanitize_component(value: str, *, max_len: int = 80) -> str:
     return cleaned
 
 
+def _sanitize_branch_prefix(value: str) -> str:
+    prefix = _sanitize_component(value, max_len=24)
+    return prefix or "luigi"
+
+
+def _short_id(value: str, *, length: int) -> str:
+    length = max(4, min(int(length or 8), 24))
+    cleaned = re.sub(r"[^A-Za-z0-9]+", "", str(value))
+    if not cleaned:
+        cleaned = _sanitize_component(str(value), max_len=length)
+    return cleaned[:length]
+
+
+def _short_hash(value: str, *, length: int) -> str:
+    length = max(4, min(int(length or 6), 16))
+    digest = hashlib.sha256(str(value).encode("utf-8", errors="replace")).hexdigest()
+    return digest[:length]
+
+
 def _safe_dest_path(dst_root: str, rel_path: str, *, allow_symlink_file: bool) -> str:
     """Resolve `rel_path` under `dst_root` and refuse symlink traversal.
 
@@ -338,6 +357,8 @@ class WorkspaceManager:
         strategy: str = "auto",
         use_git_worktree: bool = True,
         copy_ignore_patterns: Optional[List[str]] = None,
+        branch_prefix: str = "luigi",
+        branch_name_length: int = 8,
     ) -> Workspace:
         repo_path = os.path.abspath(repo_path)
         os.makedirs(repo_path, exist_ok=True)
@@ -361,7 +382,9 @@ class WorkspaceManager:
                 raise RuntimeError("Requested git worktree strategy but repo is not a git repo with commits.")
 
             worktree_path = os.path.join(run_dir, "worktree")
-            branch_name = f"orchestrator/{run_id}"
+            prefix = _sanitize_branch_prefix(branch_prefix)
+            short_run = _short_id(run_id, length=branch_name_length)
+            branch_name = f"{prefix}/{short_run}"
             if os.path.isdir(worktree_path) and is_git_repo(worktree_path):
                 return Workspace(
                     repo_path=repo_path,
@@ -473,6 +496,9 @@ class WorkspaceManager:
         strategy: str = "auto",
         use_git_worktree: bool = True,
         copy_ignore_patterns: Optional[List[str]] = None,
+        branch_prefix: str = "luigi",
+        branch_name_length: int = 8,
+        branch_suffix_length: int = 6,
     ) -> Workspace:
         repo_path = os.path.abspath(repo_path)
         source_root = os.path.abspath(source_path or repo_path)
@@ -496,8 +522,10 @@ class WorkspaceManager:
             if not is_git_repo(repo_path) or not has_git_commit(repo_path):
                 raise RuntimeError("Requested git worktree strategy but repo is not a git repo with commits.")
             worktree_path = os.path.join(run_dir, "worktree")
-            branch_suffix = _sanitize_component(candidate_id, max_len=80)
-            branch_name = f"orchestrator/{run_id}/iter_{iteration}_{branch_suffix}"
+            prefix = _sanitize_branch_prefix(branch_prefix)
+            short_run = _short_id(run_id, length=branch_name_length)
+            short_suffix = _short_hash(candidate_id, length=branch_suffix_length)
+            branch_name = f"{prefix}/{short_run}-i{iteration}-{short_suffix}"
             # Idempotent resume: if worktree path already exists and is a git worktree, reuse it.
             if os.path.isdir(worktree_path) and is_git_repo(worktree_path):
                 return Workspace(
